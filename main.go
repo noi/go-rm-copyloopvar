@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/dave/dst"
@@ -59,28 +60,42 @@ func fix(path string, mode fs.FileMode) (bool, error) {
 
 	fixed := false
 	dst.Inspect(f, func(n dst.Node) bool {
-		rangeStmt, ok := n.(*dst.RangeStmt)
-		if !ok {
+		var loopVarNames []string
+		var body *dst.BlockStmt
+		switch n := n.(type) {
+		case *dst.RangeStmt:
+			body = n.Body
+			if n, ok := n.Key.(*dst.Ident); ok {
+				loopVarNames = append(loopVarNames, n.Name)
+			}
+			if n, ok := n.Value.(*dst.Ident); ok {
+				loopVarNames = append(loopVarNames, n.Name)
+			}
+		case *dst.ForStmt:
+			body = n.Body
+			if n, ok := n.Init.(*dst.AssignStmt); ok {
+				for _, n := range n.Lhs {
+					if n, ok := n.(*dst.Ident); ok {
+						loopVarNames = append(loopVarNames, n.Name)
+					}
+				}
+			}
+		default:
 			return true
 		}
-		rangeStmtKey, ok := rangeStmt.Key.(*dst.Ident)
-		if !ok {
-			return true
-		}
-		rangeStmtValue, ok := rangeStmt.Value.(*dst.Ident)
-		if !ok {
+		if len(loopVarNames) == 0 {
 			return true
 		}
 
-		list := make([]dst.Stmt, 0, len(rangeStmt.Body.List))
-		for _, s := range rangeStmt.Body.List {
-			if isCopyLoopVar(s, rangeStmtKey.Name, rangeStmtValue.Name) {
+		list := make([]dst.Stmt, 0, len(body.List))
+		for _, s := range body.List {
+			if isCopyLoopVar(s, loopVarNames) {
 				fixed = true
 				continue
 			}
 			list = append(list, s)
 		}
-		rangeStmt.Body.List = list
+		body.List = list
 		return true
 	})
 
@@ -109,7 +124,7 @@ func fix(path string, mode fs.FileMode) (bool, error) {
 	return true, nil
 }
 
-func isCopyLoopVar(s dst.Stmt, kName, vName string) bool {
+func isCopyLoopVar(s dst.Stmt, loopVarNames []string) bool {
 	assignStmt, ok := s.(*dst.AssignStmt)
 	if !ok {
 		return false
@@ -125,5 +140,5 @@ func isCopyLoopVar(s dst.Stmt, kName, vName string) bool {
 	if !ok {
 		return false
 	}
-	return l.Name == r.Name && (l.Name == kName || l.Name == vName)
+	return l.Name == r.Name && slices.Contains(loopVarNames, l.Name)
 }
